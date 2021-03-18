@@ -1,12 +1,47 @@
+import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 import numpy as np
 
+from dataclasses import dataclass
+from collections import deque
 from torch.distributions import Categorical
 
 from mdn import MDN
+
+
+@dataclass
+class Episode:
+    states: np.ndarray
+    actions: np.ndarray
+    rewards: np.ndarray
+    commands: np.ndarray
+    next_states: np.ndarray
+    dones: np.ndarray
+    total_return: float
+    length: int
+
+
+class ReplayBuffer():
+    def __init__(self, size):
+        self.buffer = deque(maxlen=size)
+
+    def add(self, episode):
+        self.buffer.append(episode)
+
+    def sample(self, batch_size):
+        return random.sample(self.buffer, batch_size)
+
+    def sort(self, cmp=lambda episode: episode.total_return):
+        self.buffer = sorted(self.buffer, key=cmp)[-self.size:]
+
+    def clear(self):
+        self.buffer.clear()
+
+    def __len__(self):
+        return len(self.buffer)
 
 
 class RandomController:
