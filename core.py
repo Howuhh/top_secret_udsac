@@ -6,6 +6,8 @@ import numpy as np
 
 from torch.distributions import Categorical
 
+from mdn import MDN
+
 
 class RandomController:
     def __init__(self, low=-200, high=200):        
@@ -67,9 +69,42 @@ class Actor(nn.Module):
             return action, probs, log_probs
 
         return action
-    
-class Crititc(nn.Module):
-    def __init__(self, state_size, command_size):
+
+
+class Critic(nn.Module):
+    def __init__(self, state_size, action_size, command_size, n_heads=4):
         super().__init__()
-        pass
+        self.action_size = action_size
+        # Q(s, a, c) = P(output == command | state, command, action)
+        self.model = MDN(state_size + command_size + action_size, command_size, n_heads)
+        
+    def sample(self, state, command, action):
+        x = torch.cat([state, command, action], dim=1)
+        alpha, mu, sigma = self.model(x)
+        
+        return self.model.sample(alpha, mu, sigma)
+        
+    def log_prob(self, state, command, action, output):
+        x = torch.cat([state, command, action], dim=1)
+        alpha, mu, sigma = self.model(x)
+        
+        return self.model.log_prob(alpha, mu, sigma, output)
     
+    # only for discrete actions
+    def log_prob_by_aciton(self, state, command, output):
+        action_shape = (state.shape[0], self.action_size)
+        
+        log_probs = []
+        
+        for a in range(self.action_size):
+            los_prob = self.log_prob(state, command, torch.full(action_shape, a), output).view(-1, 1)
+            
+            log_probs.append(los_prob)
+        
+        return torch.cat(log_probs, dim=-1)
+        
+    def mean(self, state, command, action):
+        x = torch.cat([state, command, action], dim=1)
+        alpha, mu, sigma = self.model(x)
+        
+        return self.model.mean(alpha, mu, sigma)
