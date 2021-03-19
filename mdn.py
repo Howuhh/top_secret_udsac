@@ -72,30 +72,3 @@ class MDN(nn.Module):
         log_prob = self.log_prob(alpha, mu, sigma, y)
         
         return -log_prob.mean()
-    
-    
-if __name__ == "__main__":
-    N, dim = 2500, 1
-
-    y_train = np.random.uniform(0, 1, (N, dim)).astype(np.float32)
-    noise = np.random.uniform(-0.1, 0.1, (N, dim)).astype(np.float32)
-
-    x_train = y_train + 0.3*np.sin(2*np.pi*y_train) + noise
-    x_test = np.linspace(-0.1, 1.1, N).reshape(-1, 1).astype(np.float32)
-    
-    X, Y = torch.tensor(x_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.float32)
-
-    mdn = MDN(1, 1, n_heads=4)
-    optim = torch.optim.Adam(mdn.parameters())
-
-    for epoch in range(1000):    
-        loss = mdn.nll_loss(X, Y)
-        
-        if epoch % 100 == 0:
-            print(loss.item())
-        
-        optim.zero_grad()
-        loss.backward()
-        optim.step()
-        
-    assert loss <= -1.0
