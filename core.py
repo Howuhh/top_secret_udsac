@@ -32,7 +32,8 @@ class ReplayBuffer():
         self.buffer.append(episode)
 
     def sample(self, batch_size):
-        return random.sample(self.buffer, batch_size)
+        idxs = np.random.randint(0, len(self), batch_size)
+        return [self.buffer[idx] for idx in idxs]
 
     def sort(self, cmp=lambda episode: episode.total_return):
         self.buffer = sorted(self.buffer, key=cmp)[-self.size:]
@@ -85,11 +86,13 @@ class Actor(nn.Module):
         state_output = self.state_layer(state)
         command_output = self.command_layer(command * self.command_scale)
         
+        # nan's !!!
+        # print(command_output, state_output, state) 
         return self.action_layer(state_output * command_output)
         
     def forward(self, state, command, eval_mode=False, return_probs=False):
         logits = self.get_logits(state, command)
-        
+              
         probs = F.softmax(logits, dim=-1)
         policy_dist = Categorical(probs=probs)
 
@@ -98,6 +101,7 @@ class Actor(nn.Module):
         else:
             action = policy_dist.sample()
 
+
         if return_probs:
             log_probs = F.log_softmax(logits, dim=-1)
 
@@ -105,7 +109,7 @@ class Actor(nn.Module):
 
         return action
 
-
+# Rewrite with log_alpha instead of alpha
 class Critic(nn.Module):
     def __init__(self, state_size, action_size, command_size, n_heads=4):
         super().__init__()
@@ -113,7 +117,7 @@ class Critic(nn.Module):
         # Q(s, a, c) = P(output == command | state, command, action)
         self.model = MDN(state_size + command_size + action_size, command_size, n_heads)
         
-    def sample(self, state, command, action):
+    def sample(self, state, command, action):            
         x = torch.cat([state, command, action], dim=1)
         alpha, mu, sigma = self.model(x)
         
