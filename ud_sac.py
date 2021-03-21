@@ -32,36 +32,37 @@ class UDSAC:
         # PROBLEM: action_size != num_actions, num_actions=4 but action_size=1
         self.critic = Critic(state_size, action_size, command_size=2, n_heads=critic_heads).to(DEVICE)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr)
-            
+        
+        self.action_size = action_size    
         self.alpha = alpha
         self.gamma = gamma
         self.tau = tau
                     
     def _actor_loss(self, state, command):
-        action, action_probs, action_log_probs = self.actor(state, command, return_probs=True)
+        _, action_probs, action_log_probs = self.actor(state, command, return_probs=True)
         
         Q_target = self.critic.log_prob_by_aciton(state, command, output=command).exp()
 
         assert action_log_probs.shape == Q_target.shape == action_probs.shape
         
-        loss = ((self.alpha * action_log_probs - Q_target) * action_probs).sum(dim=1).mean()
+        loss = ((self.alpha * action_log_probs - Q_target.detach()) * action_probs).sum(dim=1).mean()
         
         return loss
     
     def _critic_loss(self, state, command, action, reward, next_state, done, output):
+        with torch.no_grad():
+            next_command = torch.zeros_like(command)
+
+            next_command[:, 0] = command[:, 0] - reward
+            next_command[:, 1] = torch.max(command[:, 1] - 1, torch.ones_like(command[:, 1]))
+            
+            next_action = self.actor(next_state, next_command)
+            next_action = F.one_hot(next_action.long(), num_classes=self.action_size)
+            
+            next_output = self.critic.sample(next_state, next_action, next_command)
+            target_output = next_output + torch.cat([reward.view(-1, 1), torch.ones_like(reward).view(-1, 1)], dim=-1)
+        
         Q_done = self.critic.log_prob(state, action, command, output)
-
-        next_command = torch.zeros_like(command)
-
-        next_command[:, 0] = command[:, 0] - reward
-        next_command[:, 1] = torch.max(command[:, 1] - 1, torch.ones_like(command[:, 1]))
-        
-        next_action = self.actor(next_state, next_command)
-        next_action = F.one_hot(next_action.long())
-        
-        next_output = self.critic.sample(next_state, next_action, next_command)
-        target_output = next_output + torch.cat([reward.view(-1, 1), torch.ones_like(reward).view(-1, 1)], dim=-1)
-        
         Q_not_done = self.critic.log_prob(state, action, command, target_output)        
         loss = -(done * Q_done + (1 - done) * Q_not_done).mean()
 
@@ -74,7 +75,7 @@ class UDSAC:
         command = torch.tensor(command, dtype=torch.float32, device=DEVICE)
         
         action = torch.tensor(action, dtype=torch.float32, device=DEVICE)
-        action = F.one_hot(action.long())
+        action = F.one_hot(action.long(), num_classes=self.action_size)
         
         reward = torch.tensor(reward, dtype=torch.float32, device=DEVICE)
         next_state = torch.tensor(next_state, dtype=torch.float32, device=DEVICE)
@@ -87,7 +88,7 @@ class UDSAC:
         actor_loss.backward()
         self.actor_optimizer.step()
         
-        # print("Actor: ", [torch.norm(p.grad) for p in self.actor.parameters()])
+        print("Actor: ", [torch.norm(p.grad) for p in self.actor.parameters()])
         
         critic_loss = self._critic_loss(state, command, action, reward, next_state, done, output)
         
@@ -95,7 +96,7 @@ class UDSAC:
         critic_loss.backward()
         self.critic_optimizer.step()
 
-        # print("Critic: ", [torch.norm(p.grad) for p in self.critic.parameters()])
+        print("Critic: ", [torch.norm(p.grad) for p in self.critic.parameters()])
 
     def act(self, state, command, eval_mode=False):
         with torch.no_grad():
@@ -209,5 +210,5 @@ if __name__ == "__main__":
     agent = UDSAC(8, 4, actor_lr=1e-3, critic_lr=1e-3)
     controller = RandomController(-200, 200)
     
-    with torch.autograd.detect_anomaly():
-        train("LunarLander-v2", agent, controller)
+    # with torch.autograd.detect_anomaly():
+    train("LunarLander-v2", agent, controller)

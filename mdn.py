@@ -20,9 +20,9 @@ class MDN(nn.Module):
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU()
         )
-        self.alpha_layer = nn.Sequential(
+        self.log_alpha_layer = nn.Sequential(
             nn.Linear(hidden_size, n_heads),
-            nn.Softmax(dim=-1)
+            nn.LogSoftmax(dim=-1)
         )
         self.log_sigma_layer = nn.Linear(hidden_size, output_size * n_heads)
         self.mu_layer = nn.Linear(hidden_size, output_size * n_heads)
@@ -30,29 +30,22 @@ class MDN(nn.Module):
     def forward(self, x):
         hidden = self.model(x)
     
-        alpha = self.alpha_layer(hidden)
+        log_alpha = self.log_alpha_layer(hidden)
         log_sigma = self.log_sigma_layer(hidden).reshape(-1, self.n_heads, self.output_size)
         mu = self.mu_layer(hidden).reshape(-1, self.n_heads, self.output_size)
                 
-        return alpha, mu, log_sigma.exp()
-    
-    def prob(self, alpha, mu, sigma, y):
+        return log_alpha, mu, log_sigma.exp()
+            
+    def log_prob(self, log_alpha, mu, sigma, y):
         mixture_dist = Normal(mu, sigma)
         
         # (batch, output_size) -> (batch, 1, output_size) -> (batch, n_heads, output_size)
         y = y.unsqueeze(-2).expand(-1, self.n_heads, -1)
         
-        return torch.sum(mixture_dist.log_prob(y).sum(-1).exp() * alpha, dim=-1)
-        
-    def log_prob(self, alpha, mu, sigma, y):
-        mixture_dist = Normal(mu, sigma)
-        
-        y = y.unsqueeze(-2).expand(-1, self.n_heads, -1)
-        
-        return torch.logsumexp(mixture_dist.log_prob(y).sum(-1) + torch.log(alpha), dim=-1)
+        return torch.logsumexp(mixture_dist.log_prob(y).sum(-1) + log_alpha, dim=-1)
 
-    def sample(self, alpha, mu, sigma):        
-        alpha_dist = Categorical(probs=alpha)
+    def sample(self, log_alpha, mu, sigma):        
+        alpha_dist = Categorical(probs=log_alpha.exp())
         mixture_dist = Normal(mu, sigma)
         
         # just selecting mixture_idx from mixture samples for each input in batch
@@ -61,14 +54,7 @@ class MDN(nn.Module):
 
         return mixture_sample.gather(-2, mixture_idx).view(-1, self.output_size)
     
-    def mean(self, alpha, mu, sigma):
+    def mean(self, log_alpha, mu, sigma):
         mixture_dist = Normal(mu, sigma)
         
-        return (mixture_dist.mean * alpha.unsqueeze(-1)).sum(-2)    
-    
-    def nll_loss(self, x, y):
-        alpha, mu, sigma = self.forward(x)
-        
-        log_prob = self.log_prob(alpha, mu, sigma, y)
-        
-        return -log_prob.mean()
+        return (mixture_dist.mean * log_alpha.exp().unsqueeze(-1)).sum(-2)

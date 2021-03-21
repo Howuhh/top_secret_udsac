@@ -101,7 +101,6 @@ class Actor(nn.Module):
         else:
             action = policy_dist.sample()
 
-
         if return_probs:
             log_probs = F.log_softmax(logits, dim=-1)
 
@@ -109,7 +108,7 @@ class Actor(nn.Module):
 
         return action
 
-# Rewrite with log_alpha instead of alpha
+
 class Critic(nn.Module):
     def __init__(self, state_size, action_size, command_size, n_heads=4):
         super().__init__()
@@ -119,31 +118,31 @@ class Critic(nn.Module):
         
     def sample(self, state, command, action):            
         x = torch.cat([state, command, action], dim=1)
-        alpha, mu, sigma = self.model(x)
+        log_alpha, mu, sigma = self.model(x)
         
-        return self.model.sample(alpha, mu, sigma)
+        return self.model.sample(log_alpha, mu, sigma)
         
     def log_prob(self, state, command, action, output):
         x = torch.cat([state, command, action], dim=1)
-        alpha, mu, sigma = self.model(x)
+        log_alpha, mu, sigma = self.model(x)
         
-        return self.model.log_prob(alpha, mu, sigma, output)
+        return self.model.log_prob(log_alpha, mu, sigma, output)
     
     # only for discrete actions
-    def log_prob_by_aciton(self, state, command, output):
-        action_shape = (state.shape[0], self.action_size)
-        
+    def log_prob_by_aciton(self, state, command, output):        
         log_probs = []
         
-        for a in range(self.action_size):
-            los_prob = self.log_prob(state, command, torch.full(action_shape, a), output).view(-1, 1)
-            
+        for a in range(self.action_size):    
+            action = torch.ones(state.shape[0]) * a
+            action = F.one_hot(action.long(), num_classes=self.action_size)
+
+            los_prob = self.log_prob(state, command, action, output).view(-1, 1)
             log_probs.append(los_prob)
         
         return torch.cat(log_probs, dim=-1)
         
     def mean(self, state, command, action):
         x = torch.cat([state, command, action], dim=1)
-        alpha, mu, sigma = self.model(x)
+        log_alpha, mu, sigma = self.model(x)
         
-        return self.model.mean(alpha, mu, sigma)
+        return self.model.mean(log_alpha, mu, sigma)
