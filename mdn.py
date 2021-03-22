@@ -2,7 +2,11 @@ import torch
 import torch.nn as nn
 import numpy as np
 
+import torch.nn.functional as F
 from torch.distributions import Categorical, Normal
+
+LOG_STD_MIN = -2
+LOG_STD_MAX = 20
 
 
 class MDN(nn.Module):
@@ -31,9 +35,10 @@ class MDN(nn.Module):
         hidden = self.model(x)
     
         log_alpha = self.log_alpha_layer(hidden)
-        log_sigma = self.log_sigma_layer(hidden).reshape(-1, self.n_heads, self.output_size)
         mu = self.mu_layer(hidden).reshape(-1, self.n_heads, self.output_size)
-                
+        log_sigma = self.log_sigma_layer(hidden).reshape(-1, self.n_heads, self.output_size)
+        log_sigma = torch.clip(log_sigma, LOG_STD_MIN, LOG_STD_MAX)
+       
         return log_alpha, mu, log_sigma.exp()
             
     def log_prob(self, log_alpha, mu, sigma, y):

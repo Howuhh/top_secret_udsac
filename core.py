@@ -27,6 +27,7 @@ class Episode:
 class ReplayBuffer():
     def __init__(self, size):
         self.buffer = deque(maxlen=size)
+        self.size = size
 
     def add(self, episode):
         self.buffer.append(episode)
@@ -46,13 +47,13 @@ class ReplayBuffer():
 
 
 class RandomController:
-    def __init__(self, low=-200, high=200):        
-        self.low = low
-        self.high = high
+    def __init__(self, r_low=-200, r_high=200, h_low=50, h_high=150):        
+        self.r_low, self.r_high = r_low, r_high
+        self.h_low, self.h_high = h_low, h_high
         
     def get_command(self, state):
-        desired_return = np.random.uniform(self.low, self.high)
-        desired_horizon = 90
+        desired_return = np.random.uniform(self.r_low, self.r_high)
+        desired_horizon = np.random.uniform(self.h_low, self.h_high)
         
         return desired_return, desired_horizon
 
@@ -125,6 +126,8 @@ class Critic(nn.Module):
     def log_prob(self, state, command, action, output):
         x = torch.cat([state, command, action], dim=1)
         log_alpha, mu, sigma = self.model(x)
+        
+        # print("Log prob:", log_alpha, mu, sigma)
         
         return self.model.log_prob(log_alpha, mu, sigma, output)
     

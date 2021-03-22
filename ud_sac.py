@@ -87,16 +87,13 @@ class UDSAC:
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         self.actor_optimizer.step()
-        
-        print("Actor: ", [torch.norm(p.grad) for p in self.actor.parameters()])
-        
+                
         critic_loss = self._critic_loss(state, command, action, reward, next_state, done, output)
         
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
         self.critic_optimizer.step()
 
-        print("Critic: ", [torch.norm(p.grad) for p in self.critic.parameters()])
 
     def act(self, state, command, eval_mode=False):
         with torch.no_grad():
@@ -207,8 +204,8 @@ def train(env_name, agent, controller, warmup_episodes=10, iterations=700, episo
         
     
 if __name__ == "__main__":
-    agent = UDSAC(8, 4, actor_lr=1e-3, critic_lr=1e-3)
-    controller = RandomController(-200, 200)
+    agent = UDSAC(8, 4, actor_lr=1e-4, critic_lr=1e-3)
+    controller = RandomController(-200, 200, 50, 180)
     
     # with torch.autograd.detect_anomaly():
     train("LunarLander-v2", agent, controller)
