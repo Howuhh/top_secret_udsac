@@ -11,6 +11,7 @@ from torch.distributions import Categorical
 
 from mdn import MDN
 
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 @dataclass
 class Episode:
@@ -65,7 +66,7 @@ class Actor(nn.Module):
         embedding_size = 64
         hidden_size = 256
         
-        self.command_scale = torch.tensor(command_scale, dtype=torch.float32)
+        self.command_scale = torch.tensor(command_scale, dtype=torch.float32, device=DEVICE)
         
         self.command_layer = nn.Sequential(
             nn.Linear(2, embedding_size),
@@ -136,7 +137,7 @@ class Critic(nn.Module):
         log_probs = []
         
         for a in range(self.action_size):    
-            action = torch.ones(state.shape[0]) * a
+            action = torch.ones(state.shape[0], device=DEVICE) * a
             action = F.one_hot(action.long(), num_classes=self.action_size)
 
             los_prob = self.log_prob(state, command, action, output).view(-1, 1)
