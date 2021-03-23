@@ -9,6 +9,7 @@ import numpy as np
 
 from copy import deepcopy
 from itertools import chain
+from collections import defaultdict
 
 from core import Actor, Critic, RandomController
 from core import ReplayBuffer, Episode
@@ -32,16 +33,21 @@ class UDSAC:
         # PROBLEM: action_size != num_actions, num_actions=4 but action_size=1
         self.critic = Critic(state_size, action_size, command_size=2, n_heads=critic_heads).to(DEVICE)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr)
+        self.target_critic = deepcopy(self.critic)
         
         self.action_size = action_size    
         self.alpha = alpha
         self.gamma = gamma
         self.tau = tau
+    
+    def _soft_update(self, target, source):
+        for tp, sp in zip(target.parameters(), source.parameters()):
+            tp.data.copy_((1 - self.tau) * tp.data + self.tau * sp.data)
                     
     def _actor_loss(self, state, command):
         _, action_probs, action_log_probs = self.actor(state, command, return_probs=True)
         
-        Q_target = self.critic.log_prob_by_aciton(state, command, output=command).exp()
+        Q_target = self.critic.log_prob_by_action(state, command, output=command)
 
         assert action_log_probs.shape == Q_target.shape == action_probs.shape
         
@@ -58,13 +64,13 @@ class UDSAC:
             
             next_action = self.actor(next_state, next_command)
             next_action = F.one_hot(next_action.long(), num_classes=self.action_size)
-            
-            next_output = self.critic.sample(next_state, next_action, next_command)
+
+            next_output = self.target_critic.sample(next_state, next_action, next_command)
             target_output = next_output + torch.cat([reward.view(-1, 1), torch.ones_like(reward).view(-1, 1)], dim=-1)
         
         Q_done = self.critic.log_prob(state, action, command, output)
         Q_not_done = self.critic.log_prob(state, action, command, target_output)        
-        loss = -(done * Q_done + (1 - done) * Q_not_done).mean()
+        loss = -(done * Q_done + (1 - done) * Q_not_done).mean() # NLL
 
         return loss
     
@@ -87,12 +93,19 @@ class UDSAC:
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         self.actor_optimizer.step()
-                
+        
+        # WARN: only for testing
+        # for _ in range(100):
         critic_loss = self._critic_loss(state, command, action, reward, next_state, done, output)
         
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
         self.critic_optimizer.step()
+        
+        with torch.no_grad():
+            self._soft_update(self.target_critic, self.critic)
+            
+        return actor_loss, critic_loss
 
 
     def act(self, state, command, eval_mode=False):
@@ -159,11 +172,14 @@ def train(env_name, agent, controller, warmup_episodes=10, iterations=700, episo
     
     buffer = ReplayBuffer(size=buffer_size)
     
+    log = defaultdict(list)
+    
     print("Start WarmUp")
     for _ in range(warmup_episodes):
         episode = sample_episode(env, None, None)
         buffer.add(episode)
       
+    total_critic_loss, total_actor_loss = 0.0, 0.0
     print("Start Training")  
     for i in range(iterations):
         for _ in range(updates_per_iter):
@@ -187,7 +203,10 @@ def train(env_name, agent, controller, warmup_episodes=10, iterations=700, episo
                 dones.append(episode.dones[t1])
                 outputs.append([dr, dh])
 
-            agent.update([states, commands, actions, rewards, next_states, dones, outputs])
+            actor_loss, critic_loss = agent.update([states, commands, actions, rewards, next_states, dones, outputs])
+            
+            total_actor_loss += actor_loss
+            total_critic_loss += critic_loss
         
         for _ in range(episodes_per_iter):
             episode = sample_episode(env, agent, controller)
@@ -200,12 +219,24 @@ def train(env_name, agent, controller, warmup_episodes=10, iterations=700, episo
             desired_returns = np.array([e.commands[0][0] for e in eval_episodes])
             desired_horizons = np.array([e.commands[0][1] for e in eval_episodes])
             
-            print(i, f"Reward: {returns.mean()} ({returns.std()})", f"Desired: {desired_returns.mean()} ({desired_returns.std()})")
-        
+            returns_mean, desired_returns_mean = returns.mean(), desired_returns.mean() 
+            
+            print(i, f"|Actual - Desired| : {abs(returns_mean - desired_returns_mean)}", f"Reward: {returns_mean}", f"Desired: {desired_returns_mean}")
+            print(i, "Actor loss: ", actor_loss.item() / (i * updates_per_iter), "Critic loss: ", critic_loss.item() / (i * updates_per_iter))
+            
+            log["actual_return_mean"].append(returns_mean)
+            log["actual_return_std"].append(returns.std())
+            log["desired_return_mean"].append(desired_returns_mean)
+            log["desired_return_std"].append(desired_returns.std())
+            log["desired_horizon_mean"].append(desired_horizons.mean())
+            log["desired_horizon_std"].append(desired_horizons.std())
+            
+    return log
+    
     
 if __name__ == "__main__":
     agent = UDSAC(8, 4, actor_lr=1e-4, critic_lr=1e-3)
     controller = RandomController(-200, 200, 50, 180)
-    
+    # TODO: эксперимент только для mdn
     # with torch.autograd.detect_anomaly():
     train("LunarLander-v2", agent, controller)

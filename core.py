@@ -57,6 +57,15 @@ class RandomController:
         desired_horizon = np.random.uniform(self.h_low, self.h_high)
         
         return desired_return, desired_horizon
+    
+    
+class ConstantController:
+    def __init__(self, reward, horizon):        
+        self.reward = reward
+        self.horizon = horizon
+        
+    def get_command(self, state):
+        return self.reward, self.horizon
 
 
 class Actor(nn.Module):
@@ -86,10 +95,9 @@ class Actor(nn.Module):
         
     def get_logits(self, state, command):
         state_output = self.state_layer(state)
+
         command_output = self.command_layer(command * self.command_scale)
-        
-        # nan's !!!
-        # print(command_output, state_output, state) 
+
         return self.action_layer(state_output * command_output)
         
     def forward(self, state, command, eval_mode=False, return_probs=False):
@@ -133,7 +141,7 @@ class Critic(nn.Module):
         return self.model.log_prob(log_alpha, mu, sigma, output)
     
     # only for discrete actions
-    def log_prob_by_aciton(self, state, command, output):        
+    def log_prob_by_action(self, state, command, output):        
         log_probs = []
         
         for a in range(self.action_size):    
