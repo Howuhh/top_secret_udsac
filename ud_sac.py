@@ -222,7 +222,7 @@ def train(env_name, agent, controller, warmup_episodes=10, iterations=700, episo
             returns_mean, desired_returns_mean = returns.mean(), desired_returns.mean() 
             
             print(i, f"|Actual - Desired| : {abs(returns_mean - desired_returns_mean)}", f"Reward: {returns_mean}", f"Desired: {desired_returns_mean}")
-            print(i, "Actor loss: ", actor_loss.item() / (i * updates_per_iter), "Critic loss: ", critic_loss.item() / (i * updates_per_iter))
+            print(i, "Actor loss: ", total_actor_loss.item() / ((i + 1) * updates_per_iter), "Critic loss: ", total_critic_loss.item() / ((i + 1) * updates_per_iter))
             
             log["actual_return_mean"].append(returns_mean)
             log["actual_return_std"].append(returns.std())
@@ -237,6 +237,5 @@ def train(env_name, agent, controller, warmup_episodes=10, iterations=700, episo
 if __name__ == "__main__":
     agent = UDSAC(8, 4, actor_lr=1e-4, critic_lr=1e-3)
     controller = RandomController(-200, 200, 50, 180)
-    # TODO: эксперимент только для mdn
-    # with torch.autograd.detect_anomaly():
+
     train("LunarLander-v2", agent, controller)
