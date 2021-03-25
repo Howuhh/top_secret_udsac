@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch.distributions import Categorical, Normal
 
 LOG_STD_MIN = -2
-LOG_STD_MAX = 20
+LOG_STD_MAX = 20 # default 20
 
 
 class MDN(nn.Module):
@@ -63,3 +63,6 @@ class MDN(nn.Module):
         mixture_dist = Normal(mu, sigma)
         
         return (mixture_dist.mean * log_alpha.exp().unsqueeze(-1)).sum(-2)
+    
+    def nll_loss(self, log_alpha, mu, sigma, y):
+        return -self.log_prob(log_alpha, mu, sigma, y).mean()

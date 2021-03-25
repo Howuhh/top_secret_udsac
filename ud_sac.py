@@ -11,7 +11,7 @@ from copy import deepcopy
 from itertools import chain
 from collections import defaultdict
 
-from core import Actor, Critic, RandomController
+from core import Actor, Critic, RandomController, SortedController
 from core import ReplayBuffer, Episode
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -48,7 +48,7 @@ class UDSAC:
         _, action_probs, action_log_probs = self.actor(state, command, return_probs=True)
         
         Q_target = self.critic.log_prob_by_action(state, command, output=command)
-
+        
         assert action_log_probs.shape == Q_target.shape == action_probs.shape
         
         loss = ((self.alpha * action_log_probs - Q_target.detach()) * action_probs).sum(dim=1).mean()
@@ -66,6 +66,8 @@ class UDSAC:
             next_action = F.one_hot(next_action.long(), num_classes=self.action_size)
 
             next_output = self.target_critic.sample(next_state, next_action, next_command)
+            # next_output[:, 1] = torch.round(next_output[:, 1])
+            
             target_output = next_output + torch.cat([reward.view(-1, 1), torch.ones_like(reward).view(-1, 1)], dim=-1)
         
         Q_done = self.critic.log_prob(state, action, command, output)
@@ -73,7 +75,10 @@ class UDSAC:
         loss = -(done * Q_done + (1 - done) * Q_not_done).mean() # NLL
 
         return loss
-    
+
+    def _critic_loss_nll(self, state, command, action, output):
+        return self.critic.nll_loss(state, command, action, output)
+
     def update(self, batch):
         state, command, action, reward, next_state, done, output = batch
         
@@ -88,19 +93,18 @@ class UDSAC:
         done = torch.tensor(done, dtype=torch.float32, device=DEVICE)
         output = torch.tensor(output, dtype=torch.float32, device=DEVICE)
         
+        critic_loss = self._critic_loss(state, command, action, reward, next_state, done, output)
+        # critic_loss = self._critic_loss_nll(state, command, action, output)
+    
+        self.critic_optimizer.zero_grad()
+        critic_loss.backward()
+        self.critic_optimizer.step()
+            
         actor_loss = self._actor_loss(state, command)
         
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         self.actor_optimizer.step()
-        
-        # WARN: only for testing
-        # for _ in range(100):
-        critic_loss = self._critic_loss(state, command, action, reward, next_state, done, output)
-        
-        self.critic_optimizer.zero_grad()
-        critic_loss.backward()
-        self.critic_optimizer.step()
         
         with torch.no_grad():
             self._soft_update(self.target_critic, self.critic)
@@ -117,6 +121,13 @@ class UDSAC:
             
         return action.cpu().numpy().item()
     
+    def save(self, path):
+        torch.save(self, path)
+        
+    def load(self, path):
+        #TODO
+        pass
+        
     
 def sample_episode(env, agent, controller, eval_mode=False, seed=0):
     states, actions, rewards, commands, next_states, dones = [], [], [], [], [], []
@@ -125,6 +136,7 @@ def sample_episode(env, agent, controller, eval_mode=False, seed=0):
         set_seed(env, seed)
     
     state, done = env.reset(), False
+    # init (1, 1) command
     desired_return, desired_horizon = (1, 1) if controller is None else controller.get_command(state)
     
     total_reward, length = 0.0, 0.0
@@ -164,7 +176,7 @@ def sample_episode(env, agent, controller, eval_mode=False, seed=0):
 
 
 def train(env_name, agent, controller, warmup_episodes=10, iterations=700, episodes_per_iter=20, updates_per_iter=100, 
-          buffer_size=1000, batch_size=128, test_episodes=10, test_every=5, seed=0):
+          buffer_size=128, batch_size=128, test_episodes=10, test_every=5, seed=0):
     print("training on", DEVICE)
     
     env, test_env = gym.make(env_name), gym.make(env_name)
@@ -178,6 +190,8 @@ def train(env_name, agent, controller, warmup_episodes=10, iterations=700, episo
     for _ in range(warmup_episodes):
         episode = sample_episode(env, None, None)
         buffer.add(episode)
+        controller.consume_episode(episode)
+    controller.sort()
       
     total_critic_loss, total_actor_loss = 0.0, 0.0
     print("Start Training")  
@@ -211,6 +225,8 @@ def train(env_name, agent, controller, warmup_episodes=10, iterations=700, episo
         for _ in range(episodes_per_iter):
             episode = sample_episode(env, agent, controller)
             buffer.add(episode)
+            controller.consume_episode(episode)
+        controller.sort()
             
         if i % test_every == 0:
             eval_episodes = [sample_episode(test_env, agent, controller) for _ in range(test_episodes)]
@@ -221,8 +237,7 @@ def train(env_name, agent, controller, warmup_episodes=10, iterations=700, episo
             
             returns_mean, desired_returns_mean = returns.mean(), desired_returns.mean() 
             
-            print(i, f"|Actual - Desired| : {abs(returns_mean - desired_returns_mean)}", f"Reward: {returns_mean}", f"Desired: {desired_returns_mean}")
-            print(i, "Actor loss: ", total_actor_loss.item() / ((i + 1) * updates_per_iter), "Critic loss: ", total_critic_loss.item() / ((i + 1) * updates_per_iter))
+            print(f"Step: {i}, Reward: {np.round(returns_mean, 5)}, Desired: {np.round(desired_returns_mean, 5)}, Actor loss: {np.round(total_actor_loss.item() / ((i + 1) * updates_per_iter), 4)}, Critic loss: {np.round(total_critic_loss.item() / ((i + 1) * updates_per_iter), 4)}")
             
             log["actual_return_mean"].append(returns_mean)
             log["actual_return_std"].append(returns.std())
@@ -231,11 +246,15 @@ def train(env_name, agent, controller, warmup_episodes=10, iterations=700, episo
             log["desired_horizon_mean"].append(desired_horizons.mean())
             log["desired_horizon_std"].append(desired_horizons.std())
             
+            agent.save("udsac_test.pt")
+            
     return log
     
     
 if __name__ == "__main__":
-    agent = UDSAC(8, 4, actor_lr=1e-4, critic_lr=1e-3)
-    controller = RandomController(-200, 200, 50, 180)
-
-    train("LunarLander-v2", agent, controller)
+    agent = UDSAC(8, 4, actor_lr=5e-4, critic_lr=1e-3)
+    # controller = RandomController(-200, 200, 50, 180)
+    controller = SortedController(buffer_size=1024)
+        
+    log = train("LunarLander-v2", agent, controller, warmup_episodes=5, iterations=5000, episodes_per_iter=5, 
+        updates_per_iter=100, buffer_size=128, batch_size=512, test_episodes=10, test_every=25, seed=42)

@@ -56,16 +56,36 @@ class RandomController:
         desired_return = np.random.uniform(self.r_low, self.r_high)
         desired_horizon = np.random.uniform(self.h_low, self.h_high)
         
-        return desired_return, desired_horizon
+        return desired_return, np.round(desired_horizon)
     
+    def consume_episode(self, episode):
+        pass
     
-class ConstantController:
-    def __init__(self, reward, horizon):        
-        self.reward = reward
-        self.horizon = horizon
+    def sort(self):
+        pass
+    
+
+class SortedController:
+    def __init__(self, buffer_size):        
+        self.buffer = ReplayBuffer(buffer_size)
         
     def get_command(self, state):
-        return self.reward, self.horizon
+        returns = [e.total_return for e in self.buffer.buffer]
+        horizons = [e.length for e in self.buffer.buffer]
+        
+        returns_mean, returns_std = np.mean(returns), np.std(returns)
+        
+        desired_return = np.random.uniform(returns_mean, returns_mean + returns_std)
+        desired_horizon = np.mean(horizons)
+        
+        return desired_return, np.round(desired_horizon)
+    
+    def consume_episode(self, episode):
+        self.buffer.add(episode)
+        
+    def sort(self):
+        self.buffer.sort()
+
 
 
 class Actor(nn.Module):
@@ -135,9 +155,7 @@ class Critic(nn.Module):
     def log_prob(self, state, command, action, output):
         x = torch.cat([state, command, action], dim=1)
         log_alpha, mu, sigma = self.model(x)
-        
-        # print("Log prob:", log_alpha, mu, sigma)
-        
+            
         return self.model.log_prob(log_alpha, mu, sigma, output)
     
     # only for discrete actions
@@ -158,3 +176,10 @@ class Critic(nn.Module):
         log_alpha, mu, sigma = self.model(x)
         
         return self.model.mean(log_alpha, mu, sigma)
+    
+    def nll_loss(self, state, command, action, output):
+        x = torch.cat([state, command, action], dim=1)
+        log_alpha, mu, sigma = self.model(x)
+        
+        return self.model.nll_loss(log_alpha, mu, sigma, output)
+        
