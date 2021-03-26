@@ -65,27 +65,24 @@ class RandomController:
         pass
     
 
-class SortedController:
-    def __init__(self, buffer_size):        
+class MeanController:
+    def __init__(self, buffer_size, std_scale=1.0):  
+        self.std_scale = std_scale   
         self.buffer = ReplayBuffer(buffer_size)
-        
+
     def get_command(self, state):
         returns = [e.total_return for e in self.buffer.buffer]
         horizons = [e.length for e in self.buffer.buffer]
         
         returns_mean, returns_std = np.mean(returns), np.std(returns)
         
-        desired_return = np.random.uniform(returns_mean, returns_mean + returns_std)
+        desired_return = np.random.uniform(returns_mean, returns_mean + self.std_scale * returns_std)
         desired_horizon = np.mean(horizons)
         
         return desired_return, np.round(desired_horizon)
     
     def consume_episode(self, episode):
         self.buffer.add(episode)
-        
-    def sort(self):
-        self.buffer.sort()
-
 
 
 class Actor(nn.Module):

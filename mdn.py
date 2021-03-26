@@ -65,4 +65,5 @@ class MDN(nn.Module):
         return (mixture_dist.mean * log_alpha.exp().unsqueeze(-1)).sum(-2)
     
     def nll_loss(self, log_alpha, mu, sigma, y):
-        return -self.log_prob(log_alpha, mu, sigma, y).mean()
+        log_prob = self.log_prob(log_alpha, mu, sigma, y)
+        return -log_prob.mean()

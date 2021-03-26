@@ -11,7 +11,7 @@ from copy import deepcopy
 from itertools import chain
 from collections import defaultdict
 
-from core import Actor, Critic, RandomController, SortedController
+from core import Actor, Critic, RandomController, MeanController
 from core import ReplayBuffer, Episode
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -30,7 +30,6 @@ class UDSAC:
         self.actor = Actor(state_size, action_size, command_scale).to(DEVICE)
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr) 
         
-        # PROBLEM: action_size != num_actions, num_actions=4 but action_size=1
         self.critic = Critic(state_size, action_size, command_size=2, n_heads=critic_heads).to(DEVICE)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr)
         self.target_critic = deepcopy(self.critic)
@@ -66,7 +65,7 @@ class UDSAC:
             next_action = F.one_hot(next_action.long(), num_classes=self.action_size)
 
             next_output = self.target_critic.sample(next_state, next_action, next_command)
-            # next_output[:, 1] = torch.round(next_output[:, 1])
+            next_output[:, 1] = torch.round(next_output[:, 1])
             
             target_output = next_output + torch.cat([reward.view(-1, 1), torch.ones_like(reward).view(-1, 1)], dim=-1)
         
@@ -75,6 +74,16 @@ class UDSAC:
         loss = -(done * Q_done + (1 - done) * Q_not_done).mean() # NLL
 
         return loss
+    
+    # def _alpha_loss(self, state, command):
+    #     with torch.no_grad():
+    #         _, action_probs, action_log_probs = self.actor(state, command, return_probs=True)
+    #         # https://github.com/yining043/SAC-discrete/issues/2#event-3685116634
+    #         action_log_probs_exp = (action_log_probs * action_probs).sum(dim=1)
+
+    #     loss = (-self.log_alpha * (action_log_probs_exp + self.target_entropy)).mean()
+
+    #     return loss
 
     def _critic_loss_nll(self, state, command, action, output):
         return self.critic.nll_loss(state, command, action, output)
@@ -93,14 +102,15 @@ class UDSAC:
         done = torch.tensor(done, dtype=torch.float32, device=DEVICE)
         output = torch.tensor(output, dtype=torch.float32, device=DEVICE)
         
-        critic_loss = self._critic_loss(state, command, action, reward, next_state, done, output)
-        # critic_loss = self._critic_loss_nll(state, command, action, output)
+        # critic_loss = self._critic_loss(state, command, action, reward, next_state, done, output)
+        critic_loss = self._critic_loss_nll(state, command, action, output)
     
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
         self.critic_optimizer.step()
             
-        actor_loss = self._actor_loss(state, command)
+        # actor_loss = self._actor_loss(state, command) + self._actor_loss(state, output)
+        actor_loss = self._actor_loss(state, command) + self._actor_loss(state, output)
         
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
@@ -131,12 +141,10 @@ class UDSAC:
     
 def sample_episode(env, agent, controller, eval_mode=False, seed=0):
     states, actions, rewards, commands, next_states, dones = [], [], [], [], [], []
-        
-    if eval_mode:
-        set_seed(env, seed)
-    
+            
     state, done = env.reset(), False
     # init (1, 1) command
+    # max награду для эпизода вместо средней по контроллеру
     desired_return, desired_horizon = (1, 1) if controller is None else controller.get_command(state)
     
     total_reward, length = 0.0, 0.0
@@ -191,7 +199,6 @@ def train(env_name, agent, controller, warmup_episodes=10, iterations=700, episo
         episode = sample_episode(env, None, None)
         buffer.add(episode)
         controller.consume_episode(episode)
-    controller.sort()
       
     total_critic_loss, total_actor_loss = 0.0, 0.0
     print("Start Training")  
@@ -226,10 +233,10 @@ def train(env_name, agent, controller, warmup_episodes=10, iterations=700, episo
             episode = sample_episode(env, agent, controller)
             buffer.add(episode)
             controller.consume_episode(episode)
-        controller.sort()
             
         if i % test_every == 0:
-            eval_episodes = [sample_episode(test_env, agent, controller) for _ in range(test_episodes)]
+            set_seed(test_env, seed)
+            eval_episodes = [sample_episode(test_env, agent, controller, eval_mode=True) for _ in range(test_episodes)]
 
             returns = np.array([e.total_return for e in eval_episodes])
             desired_returns = np.array([e.commands[0][0] for e in eval_episodes])
@@ -249,12 +256,19 @@ def train(env_name, agent, controller, warmup_episodes=10, iterations=700, episo
             agent.save("udsac_test.pt")
             
     return log
-    
-    
+
+# TODO: что не так с рекурсивным лоссом?
+# TODO: попробовать обновлять баффер с нуля для стабильности nll лосса
+# TODO: importance sampling для логпробы критика? тогда можно будет использовать баффер (в идеале)
+
 if __name__ == "__main__":
-    agent = UDSAC(8, 4, actor_lr=5e-4, critic_lr=1e-3)
-    # controller = RandomController(-200, 200, 50, 180)
-    controller = SortedController(buffer_size=1024)
+    # agent = UDSAC(8, 4, actor_lr=1e-4, critic_lr=5e-4, critic_heads=10)
+    # controller = MeanController(buffer_size=128, std_scale=0.5)
         
-    log = train("LunarLander-v2", agent, controller, warmup_episodes=5, iterations=5000, episodes_per_iter=5, 
-        updates_per_iter=100, buffer_size=128, batch_size=512, test_episodes=10, test_every=25, seed=42)
+    # log = train("LunarLander-v2", agent, controller, warmup_episodes=5, iterations=5000, episodes_per_iter=5, 
+    #     updates_per_iter=100, buffer_size=128, batch_size=512, test_episodes=10, test_every=25, seed=42)
+    agent = UDSAC(4, 2, actor_lr=1e-4, critic_lr=2e-4, critic_heads=10, alpha=1.0)
+    controller = MeanController(buffer_size=32, std_scale=1.0) # 0.3 ?
+    
+    log = train("CartPole-v0", agent, controller, warmup_episodes=32, iterations=500, episodes_per_iter=32, 
+        updates_per_iter=100, buffer_size=32, batch_size=128, test_episodes=10, test_every=25, seed=42)
