@@ -48,21 +48,42 @@ class ReplayBuffer():
 
 
 class RandomController:
-    def __init__(self, r_low=-200, r_high=200, h_low=50, h_high=150):        
-        self.r_low, self.r_high = r_low, r_high
-        self.h_low, self.h_high = h_low, h_high
-        
+    def __init__(self, low, high):  
+        self.low = low
+        self.high = high
+
     def get_command(self, state):
-        desired_return = np.random.uniform(self.r_low, self.r_high)
-        desired_horizon = np.random.uniform(self.h_low, self.h_high)
+        desired_return = np.round(np.random.uniform(self.low, self.high))
+        
+        return desired_return, desired_return
+    
+    def consume_episode(self, episode):
+        pass
+
+    def sort(self):
+        pass
+
+
+class NormalController:
+    def __init__(self, buffer_size):  
+        self.buffer = ReplayBuffer(buffer_size)
+
+    def get_command(self, state):
+        returns = [e.total_return for e in self.buffer.buffer]
+        horizons = [e.length for e in self.buffer.buffer]
+        
+        returns_mean, returns_std = np.mean(returns), np.std(returns)
+        
+        desired_return = np.random.normal((returns_mean + (returns_mean + returns_std)) / 2, returns_std)
+        desired_horizon = np.mean(horizons)
         
         return desired_return, np.round(desired_horizon)
     
     def consume_episode(self, episode):
-        pass
-    
+        self.buffer.add(episode)
+
     def sort(self):
-        pass
+        self.buffer.sort()
     
 
 class MeanController:
@@ -83,6 +104,9 @@ class MeanController:
     
     def consume_episode(self, episode):
         self.buffer.add(episode)
+
+    def sort(self):
+        self.buffer.sort()
 
 
 class Actor(nn.Module):
@@ -110,7 +134,7 @@ class Actor(nn.Module):
             nn.Linear(hidden_size, action_size)
         )
         
-    def get_logits(self, state, command):
+    def _get_logits(self, state, command):
         state_output = self.state_layer(state)
 
         command_output = self.command_layer(command * self.command_scale)
@@ -118,7 +142,7 @@ class Actor(nn.Module):
         return self.action_layer(state_output * command_output)
         
     def forward(self, state, command, eval_mode=False, return_probs=False):
-        logits = self.get_logits(state, command)
+        logits = self._get_logits(state, command)
               
         probs = F.softmax(logits, dim=-1)
         policy_dist = Categorical(probs=probs)

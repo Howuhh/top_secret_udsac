@@ -11,7 +11,7 @@ from copy import deepcopy
 from itertools import chain
 from collections import defaultdict
 
-from core import Actor, Critic, RandomController, MeanController
+from core import Actor, Critic, MeanController, NormalController, RandomController
 from core import ReplayBuffer, Episode
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -26,7 +26,7 @@ def set_seed(env, seed=0):
     
 
 class UDSAC:
-    def __init__(self, state_size, action_size, command_scale=(1, 1), critic_heads=10, alpha=0.2, gamma=0.99, tau=0.005, actor_lr=1e-4, critic_lr=1e-4):
+    def __init__(self, state_size, action_size, command_scale=(1, 1), critic_heads=10, init_alpha=None, target_entropy_scale=0.98, gamma=0.99, tau=0.005, actor_lr=1e-4, critic_lr=1e-4, alpha_lr=1e-4):
         self.actor = Actor(state_size, action_size, command_scale).to(DEVICE)
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr) 
         
@@ -35,10 +35,17 @@ class UDSAC:
         self.target_critic = deepcopy(self.critic)
         
         self.action_size = action_size    
-        self.alpha = alpha
         self.gamma = gamma
         self.tau = tau
-    
+        
+        self.init_alpha = 0.0 if init_alpha is None else np.log(init_alpha)
+        # max possible entropy (from paper)
+        self.target_entropy = -np.log((1.0 / action_size)) * target_entropy_scale # * 0.98
+  
+        self.log_alpha = torch.tensor([self.init_alpha], dtype=torch.float32, device=DEVICE, requires_grad=True)
+        self.alpha_optimizer = optim.Adam([self.log_alpha], lr=alpha_lr)
+        self.alpha = self.log_alpha.exp()
+        
     def _soft_update(self, target, source):
         for tp, sp in zip(target.parameters(), source.parameters()):
             tp.data.copy_((1 - self.tau) * tp.data + self.tau * sp.data)
@@ -46,49 +53,49 @@ class UDSAC:
     def _actor_loss(self, state, command):
         _, action_probs, action_log_probs = self.actor(state, command, return_probs=True)
         
-        Q_target = self.critic.log_prob_by_action(state, command, output=command)
+        Q_target = self.target_critic.log_prob_by_action(state, command, output=command) # .exp()
         
         assert action_log_probs.shape == Q_target.shape == action_probs.shape
         
         loss = ((self.alpha * action_log_probs - Q_target.detach()) * action_probs).sum(dim=1).mean()
         
         return loss
-    
-    def _critic_loss(self, state, command, action, reward, next_state, done, output):
+
+    def _alpha_loss(self, state, command):
         with torch.no_grad():
-            next_command = torch.zeros_like(command)
+            action, action_probs, action_log_probs = self.actor(state, command, return_probs=True)
+            # https://github.com/yining043/SAC-discrete/issues/2#event-3685116634
+            action_log_probs_exp = (action_log_probs * action_probs).sum(dim=1)
 
-            next_command[:, 0] = command[:, 0] - reward
-            next_command[:, 1] = torch.max(command[:, 1] - 1, torch.ones_like(command[:, 1]))
-            
-            next_action = self.actor(next_state, next_command)
-            next_action = F.one_hot(next_action.long(), num_classes=self.action_size)
-
-            next_output = self.target_critic.sample(next_state, next_action, next_command)
-            next_output[:, 1] = torch.round(next_output[:, 1])
-            
-            target_output = next_output + torch.cat([reward.view(-1, 1), torch.ones_like(reward).view(-1, 1)], dim=-1)
-        
-        Q_done = self.critic.log_prob(state, action, command, output)
-        Q_not_done = self.critic.log_prob(state, action, command, target_output)        
-        loss = -(done * Q_done + (1 - done) * Q_not_done).mean() # NLL
+        loss = (-self.log_alpha * (action_log_probs_exp + self.target_entropy)).mean()
 
         return loss
     
-    # def _alpha_loss(self, state, command):
+    # def _critic_loss(self, state, command, action, reward, next_state, done, output):
     #     with torch.no_grad():
-    #         _, action_probs, action_log_probs = self.actor(state, command, return_probs=True)
-    #         # https://github.com/yining043/SAC-discrete/issues/2#event-3685116634
-    #         action_log_probs_exp = (action_log_probs * action_probs).sum(dim=1)
+    #         next_command = torch.zeros_like(command)
 
-    #     loss = (-self.log_alpha * (action_log_probs_exp + self.target_entropy)).mean()
+    #         next_command[:, 0] = command[:, 0] - reward
+    #         next_command[:, 1] = torch.max(command[:, 1] - 1, torch.ones_like(command[:, 1]))
+            
+    #         next_action = self.actor(next_state, next_command)
+    #         next_action = F.one_hot(next_action.long(), num_classes=self.action_size)
+
+    #         next_output = self.target_critic.sample(next_state, next_action, next_command)
+    #         next_output[:, 1] = torch.round(next_output[:, 1])
+            
+    #         target_output = next_output + torch.cat([reward.view(-1, 1), torch.ones_like(reward).view(-1, 1)], dim=-1)
+        
+    #     Q_done = self.critic.log_prob(state, action, command, output)
+    #     Q_not_done = self.critic.log_prob(state, action, command, target_output)        
+    #     loss = -(done * Q_done + (1 - done) * Q_not_done).mean() # NLL
 
     #     return loss
 
     def _critic_loss_nll(self, state, command, action, output):
         return self.critic.nll_loss(state, command, action, output)
 
-    def update(self, batch):
+    def update(self, batch):        
         state, command, action, reward, next_state, done, output = batch
         
         state = torch.tensor(state, dtype=torch.float32, device=DEVICE)
@@ -108,13 +115,21 @@ class UDSAC:
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
         self.critic_optimizer.step()
-            
-        # actor_loss = self._actor_loss(state, command) + self._actor_loss(state, output)
+
         actor_loss = self._actor_loss(state, command) + self._actor_loss(state, output)
+        # actor_loss = self._actor_loss(state, output)
         
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         self.actor_optimizer.step()
+        
+        alpha_loss = self._alpha_loss(state, command)
+        
+        self.alpha_optimizer.zero_grad()
+        alpha_loss.backward()
+        self.alpha_optimizer.step()
+        
+        self.alpha = self.log_alpha.exp()
         
         with torch.no_grad():
             self._soft_update(self.target_critic, self.critic)
@@ -137,14 +152,50 @@ class UDSAC:
     def load(self, path):
         #TODO
         pass
+
+
+def rollout(env, agent, desired_return, desired_horizon, render=False):
+    state, done = env.reset(), False
+
+    total_return, steps = 0.0, 0.0 
+    while not done:
+        command = np.array([desired_return, desired_horizon])
+        action = agent.act(state, command, eval_mode=True)
+        state, reward, done, _ = env.step(action)
         
+        if render:
+            env.render()
+
+        desired_return = min(desired_return - reward, env.reward_range[1])
+        desired_horizon = max(desired_horizon - 1, 1)   
+
+        steps += 1
+        total_return += reward
+        
+    if render:
+        env.close()
+
+    return total_return, steps
+
+
+def evaluate_agent(env_name, agent, desired_return_range, desired_horizon_range, seed=42):
+    # Надо подумать как этот грид считать правильно. Как понять, возможно ли вообще за такой горизонт набрать столько реварда?
+    return_grid = np.linspace(desired_return_range[0], desired_return_range[1], 50)
+    horizon_grid = np.linspace(desired_horizon_range[0], desired_horizon_range[1], 50)
+        
+    env = gym.make(env_name)
+    set_seed(env, seed=seed)
     
+    output = [rollout(env, agent, dr, dh) for (dr, dh) in zip(return_grid, horizon_grid)]
+    actual_return, actual_horizon = zip(*output)
+
+    return return_grid, horizon_grid, np.array(actual_return), np.array(actual_horizon)
+    
+
 def sample_episode(env, agent, controller, eval_mode=False, seed=0):
     states, actions, rewards, commands, next_states, dones = [], [], [], [], [], []
             
     state, done = env.reset(), False
-    # init (1, 1) command
-    # max награду для эпизода вместо средней по контроллеру
     desired_return, desired_horizon = (1, 1) if controller is None else controller.get_command(state)
     
     total_reward, length = 0.0, 0.0
@@ -184,7 +235,7 @@ def sample_episode(env, agent, controller, eval_mode=False, seed=0):
 
 
 def train(env_name, agent, controller, warmup_episodes=10, iterations=700, episodes_per_iter=20, updates_per_iter=100, 
-          buffer_size=128, batch_size=128, test_episodes=10, test_every=5, seed=0):
+          buffer_size=128, batch_size=128, test_episodes=10, test_every=5, seed=0, partial_fit=False):
     print("training on", DEVICE)
     
     env, test_env = gym.make(env_name), gym.make(env_name)
@@ -196,10 +247,14 @@ def train(env_name, agent, controller, warmup_episodes=10, iterations=700, episo
     
     print("Start WarmUp")
     for _ in range(warmup_episodes):
-        episode = sample_episode(env, None, None)
+        if partial_fit:
+            episode = sample_episode(env, agent, controller)
+        else:
+            episode = sample_episode(env, None, None)
         buffer.add(episode)
         controller.consume_episode(episode)
-      
+
+    
     total_critic_loss, total_actor_loss = 0.0, 0.0
     print("Start Training")  
     for i in range(iterations):
@@ -235,31 +290,42 @@ def train(env_name, agent, controller, warmup_episodes=10, iterations=700, episo
             controller.consume_episode(episode)
             
         if i % test_every == 0:
+            desired_returns, _, actual_returns, _ = evaluate_agent(env_name, agent, (8, 195), (8, 195), seed)
+            
+            eval_loss = np.abs(desired_returns - actual_returns).mean()
+            eval_loss_std = np.abs(desired_returns - actual_returns).std()
+            
+            max_actual_idx = np.argmax(actual_returns)
+            
+            print(f"Step: {i}, Max actual (for {round(desired_returns[max_actual_idx], 2)}): {round(actual_returns[max_actual_idx], 2)}, Eval loss: {round(eval_loss, 2)}", end=", ")
+            
             set_seed(test_env, seed)
             eval_episodes = [sample_episode(test_env, agent, controller, eval_mode=True) for _ in range(test_episodes)]
 
-            returns = np.array([e.total_return for e in eval_episodes])
-            desired_returns = np.array([e.commands[0][0] for e in eval_episodes])
-            desired_horizons = np.array([e.commands[0][1] for e in eval_episodes])
+            # returns_sample = np.array([e.total_return for e in eval_episodes])
+            # desired_returns_sample = np.array([e.commands[0][0] for e in eval_episodes])
+            # desired_horizons_sample = np.array([e.commands[0][1] for e in eval_episodes])
             
-            returns_mean, desired_returns_mean = returns.mean(), desired_returns.mean() 
+            # returns_mean, desired_returns_mean = returns_sample.mean(), desired_returns_sample.mean()
             
-            print(f"Step: {i}, Reward: {np.round(returns_mean, 5)}, Desired: {np.round(desired_returns_mean, 5)}, Actor loss: {np.round(total_actor_loss.item() / ((i + 1) * updates_per_iter), 4)}, Critic loss: {np.round(total_critic_loss.item() / ((i + 1) * updates_per_iter), 4)}")
-            
-            log["actual_return_mean"].append(returns_mean)
-            log["actual_return_std"].append(returns.std())
-            log["desired_return_mean"].append(desired_returns_mean)
-            log["desired_return_std"].append(desired_returns.std())
-            log["desired_horizon_mean"].append(desired_horizons.mean())
-            log["desired_horizon_std"].append(desired_horizons.std())
+            actor_loss_mean = round(total_actor_loss.item() / ((i + 1) * updates_per_iter), 4)
+            critic_loss_mean = round(total_critic_loss.item() / ((i + 1) * updates_per_iter), 4)
+            print(f"Actor loss: {actor_loss_mean}, Critic loss: {critic_loss_mean}, Alpha: {round(agent.alpha.detach().item(), 4)}")
+            # print(f"Step: {i}, Reward: {np.round(returns_mean, 5)}, Desired: {np.round(desired_returns_mean, 5)}, Actor loss: {np.round(actor_loss_mean, 4)}, Critic loss: {np.round(critic_loss_mean, 4)}")
+            # print(f"Step: {i}, Reward: {np.round(returns_mean, 5)}, Desired: {np.round(desired_returns_mean, 5)}")
+            # log["actual_return_mean"].append(returns_mean)
+            # log["actual_return_std"].append(returns.std())
+            # log["desired_return_mean"].append(desired_returns_mean)
+            # log["desired_return_std"].append(desired_returns.std())
+            # log["desired_horizon_mean"].append(desired_horizons.mean())
+            # log["desired_horizon_std"].append(desired_horizons.std())
+            log["eval_loss_mean"].append(eval_loss)
+            log["eval_loss_std"].append(eval_loss_std)
             
             agent.save("udsac_test.pt")
             
     return log
 
-# TODO: что не так с рекурсивным лоссом?
-# TODO: попробовать обновлять баффер с нуля для стабильности nll лосса
-# TODO: importance sampling для логпробы критика? тогда можно будет использовать баффер (в идеале)
 
 if __name__ == "__main__":
     # agent = UDSAC(8, 4, actor_lr=1e-4, critic_lr=5e-4, critic_heads=10)
@@ -267,8 +333,37 @@ if __name__ == "__main__":
         
     # log = train("LunarLander-v2", agent, controller, warmup_episodes=5, iterations=5000, episodes_per_iter=5, 
     #     updates_per_iter=100, buffer_size=128, batch_size=512, test_episodes=10, test_every=25, seed=42)
-    agent = UDSAC(4, 2, actor_lr=1e-4, critic_lr=2e-4, critic_heads=10, alpha=1.0)
-    controller = MeanController(buffer_size=32, std_scale=1.0) # 0.3 ?
+    # best_cartpole_config = {
+    #     "agent": {
+    #         "actor_lr": 1e-4,
+    #         "critic_lr": 3e-4,
+    #         "critic_heads": 10,
+    #         "target_entropy_scale": 0.5, # most important param
+    #         "alpha_lr": 1e-4,
+    #         "tau": 0.001 # not very important param
+    #     },
+    #     "random_controller": {
+    #         "low": 10,
+    #         "high": 195
+    #     },
+    #     "trainer": {
+    #         "warmup_episodes": 10,
+    #         "iterations": 350, # default, not best
+    #         "episodes_per_iter": 256,
+    #         "updates_per_iter": 100,
+    #         "buffer_size": 256,
+    #         "batch_size": 1024,
+    #         "test_episodes": 10,
+    #         "test_every": 5,
+    #         "seed": 42
+    #     }
+    # }
     
-    log = train("CartPole-v0", agent, controller, warmup_episodes=32, iterations=500, episodes_per_iter=32, 
-        updates_per_iter=100, buffer_size=32, batch_size=128, test_episodes=10, test_every=25, seed=42)
+    agent = UDSAC(4, 2, actor_lr=1e-4, critic_lr=3e-4, critic_heads=10, target_entropy_scale=0.5, alpha_lr=1e-4, tau=0.001)
+    # controller = MeanController(buffer_size=32, std_scale=1.0)
+    controller = RandomController(low=10, high=195)
+    
+    log = train("CartPole-v0", agent, controller, warmup_episodes=10, iterations=15, episodes_per_iter=32, 
+        updates_per_iter=100, buffer_size=32, batch_size=128, test_episodes=10, test_every=5, seed=42)
+    
+    print(log)
