@@ -47,7 +47,7 @@ class ReplayBuffer():
         return len(self.buffer)
 
 
-class RandomController:
+class CartPolev0RandomController:
     def __init__(self, low, high):  
         self.low = low
         self.high = high
@@ -62,29 +62,24 @@ class RandomController:
 
     def sort(self):
         pass
-
-
-class NormalController:
-    def __init__(self, buffer_size):  
-        self.buffer = ReplayBuffer(buffer_size)
+    
+class RandomController:
+    def __init__(self, desired_return_range, desired_horizon_range):  
+        self.r_low, self.r_high = desired_return_range
+        self.h_low, self.h_high = desired_horizon_range
 
     def get_command(self, state):
-        returns = [e.total_return for e in self.buffer.buffer]
-        horizons = [e.length for e in self.buffer.buffer]
-        
-        returns_mean, returns_std = np.mean(returns), np.std(returns)
-        
-        desired_return = np.random.normal((returns_mean + (returns_mean + returns_std)) / 2, returns_std)
-        desired_horizon = np.mean(horizons)
+        desired_return = np.round(np.random.uniform(self.r_low, self.r_high))
+        desired_horizon = np.round(np.random.uniform(self.h_low, self.h_high))
         
         return desired_return, np.round(desired_horizon)
     
     def consume_episode(self, episode):
-        self.buffer.add(episode)
+        pass
 
     def sort(self):
-        self.buffer.sort()
-    
+        pass
+
 
 class MeanController:
     def __init__(self, buffer_size, std_scale=1.0):  
@@ -104,9 +99,6 @@ class MeanController:
     
     def consume_episode(self, episode):
         self.buffer.add(episode)
-
-    def sort(self):
-        self.buffer.sort()
 
 
 class Actor(nn.Module):
