@@ -19,29 +19,43 @@ class Episode:
     actions: np.ndarray
     rewards: np.ndarray
     commands: np.ndarray
-    next_states: np.ndarray
     dones: np.ndarray
     total_return: float
     length: int
-
-
+    
+    
 class ReplayBuffer():
-    def __init__(self, size):
-        self.buffer = deque(maxlen=size)
-        self.size = size
+    def __init__(self):
+        self.buffer = []
 
-    def add(self, episode):
-        self.buffer.append(episode)
+    def add_episodes(self, episodes):
+        self.buffer = self._cut_episodes(episodes)
+    
+    def _cut_episodes(self, episodes):
+        fragments = [] # (state, command, action, reward, output)
+        
+        for episode in episodes:
+            prefix_return = 0.0
+            for t in range(episode.length):
+                state = episode.states[t]
+                action = episode.actions[t]
+                reward = episode.rewards[t]
+                command = episode.commands[t]
+                output = [episode.total_return - prefix_return, episode.length - t]
+                
+                prefix_return += reward
+                
+                fragments.append([state, command, action, reward, output])
+            
+        return fragments
+    
+    def clear(self):
+        self.buffer = []
 
     def sample(self, batch_size):
         idxs = np.random.randint(0, len(self), batch_size)
-        return [self.buffer[idx] for idx in idxs]
-
-    def sort(self, cmp=lambda episode: episode.total_return):
-        self.buffer = sorted(self.buffer, key=cmp)[-self.size:]
-
-    def clear(self):
-        self.buffer.clear()
+        
+        return list(zip(*[self.buffer[idx] for idx in idxs]))
 
     def __len__(self):
         return len(self.buffer)
@@ -57,12 +71,7 @@ class CartPolev0RandomController:
         
         return desired_return, desired_return
     
-    def consume_episode(self, episode):
-        pass
 
-    def sort(self):
-        pass
-    
 class RandomController:
     def __init__(self, desired_return_range, desired_horizon_range):  
         self.r_low, self.r_high = desired_return_range
@@ -73,12 +82,6 @@ class RandomController:
         desired_horizon = np.round(np.random.uniform(self.h_low, self.h_high))
         
         return desired_return, np.round(desired_horizon)
-    
-    def consume_episode(self, episode):
-        pass
-
-    def sort(self):
-        pass
 
 
 class MeanController:
