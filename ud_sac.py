@@ -305,7 +305,7 @@ def train(env_name, agent, controller, eval_return_range, eval_horizon_range, wa
             controller.consume_episode(episode)
             
         if i % test_every == 0:
-            _, _, error_matrix = evaluate_agent(env_name, agent, eval_return_range, eval_horizon_range, num=15, seed=seed)
+            _, _, error_matrix = evaluate_agent(env_name, agent, eval_return_range, eval_horizon_range, num=20, seed=seed)
             
             eval_loss = np.mean(error_matrix)
             eval_loss_std = np.std(error_matrix)
@@ -375,11 +375,13 @@ if __name__ == "__main__":
     #     }
     # }
     
-    # TODO: 
-    agent = UDSAC(8, 4, actor_lr=1e-4, critic_lr=3e-4, critic_heads=15, target_entropy_scale=0.9, alpha_lr=1e-5, tau=0.01)
+    # TODO: добавить сбор батчей по другому
+    # TODO: начать добавлять в свою ветку мок
+    # TODO: начать контроллер в4
+    agent = UDSAC(8, 4, actor_lr=3e-4, critic_lr=5e-4, critic_heads=5, target_entropy_scale=0.9, alpha_lr=1e-5, tau=0.01)
     controller = RandomController((-400, 200), (50, 280))
 
     log = train("LunarLander-v2", agent, controller, eval_return_range=(-400, 200), eval_horizon_range=(50, 280), warmup_episodes=10, 
-                iterations=10_000, episodes_per_iter=32, updates_per_iter=100, buffer_size=1024, batch_size=256, test_every=25, seed=42)
+                iterations=10_000, episodes_per_iter=32, updates_per_iter=50, buffer_size=1024, batch_size=32, test_every=25, seed=42)
     
     
