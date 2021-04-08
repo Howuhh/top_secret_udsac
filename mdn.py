@@ -10,13 +10,14 @@ LOG_STD_MAX = 20 # default 20
 
 
 class MDN(nn.Module):
-    def __init__(self, input_size, output_size, n_heads):
+    def __init__(self, input_size, output_size, n_heads, clip=False):
         super().__init__()
         
         hidden_size = 64
 
         self.output_size = output_size
         self.n_heads = n_heads
+        self.clip = clip
         
         self.model = nn.Sequential(
             nn.Linear(input_size, hidden_size),
@@ -37,8 +38,10 @@ class MDN(nn.Module):
         log_alpha = self.log_alpha_layer(hidden)
         mu = self.mu_layer(hidden).reshape(-1, self.n_heads, self.output_size)
         log_sigma = self.log_sigma_layer(hidden).reshape(-1, self.n_heads, self.output_size)
-        log_sigma = torch.clip(log_sigma, LOG_STD_MIN, LOG_STD_MAX)
-       
+        
+        if self.clip:
+            log_sigma = torch.clip(log_sigma, LOG_STD_MIN, LOG_STD_MAX)
+    
         return log_alpha, mu, log_sigma.exp()
             
     def log_prob(self, log_alpha, mu, sigma, y):

@@ -160,7 +160,7 @@ class Critic(nn.Module):
         super().__init__()
         self.action_size = action_size
         # Q(s, a, c) = P(output == command | state, command, action)
-        self.model = MDN(state_size + command_size + action_size, command_size, n_heads)
+        self.model = MDN(state_size + command_size + action_size, command_size, n_heads, clip=True)
         
     def sample(self, state, command, action):            
         x = torch.cat([state, command, action], dim=1)

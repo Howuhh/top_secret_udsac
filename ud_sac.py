@@ -41,7 +41,7 @@ class UDSAC:
         
         self.init_alpha = 0.0 if init_alpha is None else np.log(init_alpha)
         # max possible entropy (from paper)
-        self.target_entropy = -np.log((1.0 / action_size)) * target_entropy_scale # * 0.98
+        self.target_entropy = -np.log((1.0 / action_size)) * target_entropy_scale
   
         self.log_alpha = torch.tensor([self.init_alpha], dtype=torch.float32, device=DEVICE, requires_grad=True)
         self.alpha_optimizer = optim.Adam([self.log_alpha], lr=alpha_lr)
@@ -55,6 +55,7 @@ class UDSAC:
         _, action_probs, action_log_probs = self.actor(state, command, return_probs=True)
         
         Q_target = self.target_critic.log_prob_by_action(state, command, output=command) # .exp()
+        # Q_target = self.critic.log_prob_by_action(state, command, output=command) # .exp()
         
         assert action_log_probs.shape == Q_target.shape == action_probs.shape
         
@@ -93,7 +94,7 @@ class UDSAC:
         critic_loss.backward()
         self.critic_optimizer.step()
 
-        actor_loss = self._actor_loss(state, command) + self._actor_loss(state, output)
+        actor_loss = self._actor_loss(state, command) # + self._actor_loss(state, output)
         
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
@@ -241,6 +242,8 @@ def train(env_name, agent, controller, eval_return_range, eval_horizon_range, wa
     buffer.add_episodes(episodes)
     
     total_critic_loss, total_actor_loss = 0.0, 0.0
+    
+    best_eval_loss = np.inf
     print("Start Training")  
     for i in range(iterations):
         for _ in range(updates_per_iter):
@@ -270,17 +273,21 @@ def train(env_name, agent, controller, eval_return_range, eval_horizon_range, wa
             log["eval_loss_mean"].append(eval_loss)
             log["eval_loss_std"].append(eval_loss_std)
             
+            if eval_loss < best_eval_loss:
+                best_eval_loss = eval_loss
+                agent.save("udsac_test_best.pt")
+            
             agent.save("udsac_test.pt")
             
     return log
 
 
 if __name__ == "__main__":
-    agent = UDSAC(8, 4, actor_lr=3e-4, critic_lr=5e-4, critic_heads=5, target_entropy_scale=0.9, alpha_lr=1e-5, tau=0.01)
+    agent = UDSAC(8, 4, actor_lr=1e-4, critic_lr=1e-4, critic_heads=5, target_entropy_scale=0.9, alpha_lr=1e-5, tau=0.01)
     controller = RandomController((-400, 200), (50, 280))
 
     log = train("LunarLander-v2", agent, controller, eval_return_range=(-400, 200), eval_horizon_range=(50, 280), warmup_episodes=10, 
-                iterations=5000, episodes_per_iter=32, updates_per_iter=50, batch_size=1024, test_every=25, seed=42)
+                iterations=8000, episodes_per_iter=32, updates_per_iter=50, batch_size=1024, test_every=25, seed=42)
     
     # agent = UDSAC(4, 2, actor_lr=1e-4, critic_lr=3e-4, critic_heads=5, target_entropy_scale=0.8, alpha_lr=1e-5, tau=0.001)
     # controller = CartPolev0RandomController(low=10, high=195)
