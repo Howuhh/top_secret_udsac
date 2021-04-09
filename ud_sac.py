@@ -94,7 +94,7 @@ class UDSAC:
         critic_loss.backward()
         self.critic_optimizer.step()
 
-        actor_loss = self._actor_loss(state, command) # + self._actor_loss(state, output)
+        actor_loss = self._actor_loss(state, command) + self._actor_loss(state, output)
         
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
@@ -283,14 +283,16 @@ def train(env_name, agent, controller, eval_return_range, eval_horizon_range, wa
 
 
 if __name__ == "__main__":
-    # agent = UDSAC(8, 4, actor_lr=1e-4, critic_lr=1e-4, critic_heads=5, target_entropy_scale=0.9, alpha_lr=1e-5, tau=0.01)
-    # controller = RandomController((-400, 200), (50, 280))
+    # agent = UDSAC(8, 4, actor_lr=1e-4, critic_lr=1e-4, critic_heads=5, target_entropy_sctale=0.9, alpha_lr=1e-4, tau=0.01)
+    # controller = RandomController((-400, 200), (50, 300))
 
-    # log = train("LunarLander-v2", agent, controller, eval_return_range=(-400, 200), eval_horizon_range=(50, 280), warmup_episodes=10, 
-    #             iterations=8000, episodes_per_iter=32, updates_per_iter=50, batch_size=1024, test_every=25, seed=42)
+    # log = train("LunarLander-v2", agent, controller, eval_return_range=(-400, 200), eval_horizon_range=(50, 300), warmup_episodes=10, 
+    #             iterations=8000, episodes_per_iter=64, updates_per_iter=50, batch_size=1024, test_every=25, seed=42)
     
-    agent = UDSAC(4, 2, actor_lr=1e-4, critic_lr=3e-4, critic_heads=5, target_entropy_scale=0.8, alpha_lr=1e-5, tau=0.001)
+    
+    # TODO: попробовать CartPole 256 без ауткамов в лоссе актора
+    agent = UDSAC(4, 2, actor_lr=1e-4, critic_lr=3e-4, critic_heads=5, target_entropy_scale=0.8, alpha_lr=1e-4, tau=0.001)
     controller = CartPolev0RandomController(low=10, high=195)
 
     log = train("CartPole-v0", agent, controller, eval_return_range=(10, 195), eval_horizon_range=(10, 195), warmup_episodes=10, 
-                iterations=350, episodes_per_iter=32, updates_per_iter=100, batch_size=256, test_every=25, seed=42)
+                iterations=350, episodes_per_iter=256, updates_per_iter=100, batch_size=256, test_every=5, seed=42)
