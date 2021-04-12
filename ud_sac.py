@@ -11,6 +11,8 @@ from copy import deepcopy
 from itertools import chain
 from collections import defaultdict
 
+from joblib import delayed, Parallel
+
 from core import Actor, Critic, MeanController, RandomController, CartPolev0RandomController
 from core import ReplayBuffer, Episode
 
@@ -94,7 +96,7 @@ class UDSAC:
         critic_loss.backward()
         self.critic_optimizer.step()
 
-        actor_loss = self._actor_loss(state, command) + self._actor_loss(state, output)
+        actor_loss = self._actor_loss(state, command) # + self._actor_loss(state, output)
         
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
@@ -131,7 +133,7 @@ class UDSAC:
         pass
 
 
-def rollout(env, agent, desired_return, desired_horizon, render=False):
+def rollout(env, agent, desired_return, desired_horizon):
     state, done = env.reset(), False
 
     total_return, steps = 0.0, 0.0 
@@ -140,37 +142,13 @@ def rollout(env, agent, desired_return, desired_horizon, render=False):
         action = agent.act(state, command, eval_mode=True)
         state, reward, done, _ = env.step(action)
         
-        if render:
-            env.render()
-
         desired_return = min(desired_return - reward, env.reward_range[1])
         desired_horizon = max(desired_horizon - 1, 1)   
 
         steps += 1
         total_return += reward
-        
-    if render:
-        env.close()
 
     return total_return, steps
-
-
-# def evaluate_agent(env_name, agent, desired_return_range, desired_horizon_range, num=50, seed=42):
-#     return_grid = np.linspace(desired_return_range[0], desired_return_range[1], num)
-#     horizon_grid = np.linspace(desired_horizon_range[0], desired_horizon_range[1], num)
-    
-#     env = gym.make(env_name)
-#     set_seed(env, seed=seed) # мб на одной энве всегда тестировать?
-
-#     actual_desired_error = np.zeros((num, num))
-    
-#     for i, desired_reward in enumerate(return_grid):
-#         for j, desired_horizon in enumerate(horizon_grid):
-#             actual_reward, actual_horizon = rollout(env, agent, desired_reward, desired_horizon)
-            
-#             actual_desired_error[i][j] = np.abs(desired_reward - actual_reward) + np.abs(desired_horizon - actual_horizon)
-
-#     return return_grid, horizon_grid, actual_desired_error
 
 
 def evaluate_agent(env_name, agent, desired_return_range, desired_horizon_range, num=50, seed=42):
@@ -178,11 +156,29 @@ def evaluate_agent(env_name, agent, desired_return_range, desired_horizon_range,
     horizon_grid = np.linspace(desired_horizon_range[0], desired_horizon_range[1], num)
     
     env = gym.make(env_name)
-    set_seed(env, seed=seed) 
+    set_seed(env, seed=seed) # мб на одной энве всегда тестировать?
 
-    actual_return = np.array([rollout(env, agent, dr, dr)[0] for dr in return_grid])
+    actual_desired_error = np.zeros((num, num))
+    
+    for i, desired_reward in enumerate(return_grid):
+        for j, desired_horizon in enumerate(horizon_grid):
+            actual_reward, actual_horizon = rollout(env, agent, desired_reward, desired_horizon)
+            
+            actual_desired_error[i, j] = np.abs(desired_reward - actual_reward) + np.abs(desired_horizon - actual_horizon)
 
-    return return_grid, horizon_grid, np.abs(return_grid - actual_return)
+    return return_grid, horizon_grid, actual_desired_error
+
+
+# def evaluate_agent(env_name, agent, desired_return_range, desired_horizon_range, num=50, seed=42):
+#     return_grid = np.linspace(desired_return_range[0], desired_return_range[1], num)
+#     horizon_grid = np.linspace(desired_horizon_range[0], desired_horizon_range[1], num)
+    
+#     env = gym.make(env_name)
+#     set_seed(env, seed=seed) 
+
+#     actual_return = np.array([rollout(env, agent, dr, dr)[0] for dr in return_grid])
+
+#     return return_grid, horizon_grid, np.abs(return_grid - actual_return)
     
 
 
@@ -227,7 +223,7 @@ def sample_episode(env, agent, controller, eval_mode=False, seed=0):
 
 
 def train(env_name, agent, controller, eval_return_range, eval_horizon_range, warmup_episodes=10, iterations=700, episodes_per_iter=32, 
-          updates_per_iter=100, batch_size=256, test_episodes=10, test_every=5, seed=0):
+          updates_per_iter=100, batch_size=256, test_episodes=10, test_every=5, seed=0, partial_fit=False, n_jobs=4):
     print("training on", DEVICE)
     
     env, test_env = gym.make(env_name), gym.make(env_name)
@@ -238,7 +234,12 @@ def train(env_name, agent, controller, eval_return_range, eval_horizon_range, wa
     log = defaultdict(list)
     
     print("Start WarmUp")
-    episodes = [sample_episode(env, None, None) for _ in range(warmup_episodes)]
+    if partial_fit:
+        pool = [delayed(sample_episode)(env, agent, controller) for _ in range(episodes_per_iter)]
+    else:
+        pool = [delayed(sample_episode)(env, None, None) for _ in range(warmup_episodes)]
+    
+    episodes = Parallel(n_jobs=n_jobs)(pool)
     buffer.add_episodes(episodes)
     
     total_critic_loss, total_actor_loss = 0.0, 0.0
@@ -254,7 +255,8 @@ def train(env_name, agent, controller, eval_return_range, eval_horizon_range, wa
             total_actor_loss += actor_loss
             total_critic_loss += critic_loss
         
-        episodes = [sample_episode(env, agent, controller) for _ in range(episodes_per_iter)]
+        pool = [delayed(sample_episode)(env, agent, controller) for _ in range(episodes_per_iter)]
+        episodes = Parallel(n_jobs=n_jobs)(pool)
         buffer.add_episodes(episodes)
             
         if i % test_every == 0:
@@ -283,16 +285,19 @@ def train(env_name, agent, controller, eval_return_range, eval_horizon_range, wa
 
 
 if __name__ == "__main__":
-    # agent = UDSAC(8, 4, actor_lr=1e-4, critic_lr=1e-4, critic_heads=5, target_entropy_sctale=0.9, alpha_lr=1e-4, tau=0.01)
-    # controller = RandomController((-400, 200), (50, 300))
+    agent = torch.load("LL_8000_test.pt", map_location="cpu")
+    # agent = UDSAC(8, 4, actor_lr=1e-4, critic_lr=1e-4, critic_heads=5, target_entropy_scale=0.9, alpha_lr=1e-4, tau=0.01)
+    controller = RandomController((-300, 300), (50, 400))
 
-    # log = train("LunarLander-v2", agent, controller, eval_return_range=(-400, 200), eval_horizon_range=(50, 300), warmup_episodes=10, 
+    log = train("LunarLander-v2", agent, controller, eval_return_range=(-300, 300), eval_horizon_range=(50, 400), iterations=8000, 
+                episodes_per_iter=64, updates_per_iter=50, batch_size=1024, test_every=25, seed=42, n_jobs=4, partial_fit=True)
+
+    # log = train("LunarLander-v2", agent, controller, eval_return_range=(-300, 300), eval_horizon_range=(50, 400), warmup_episodes=10, 
     #             iterations=8000, episodes_per_iter=64, updates_per_iter=50, batch_size=1024, test_every=25, seed=42)
     
-    
     # TODO: попробовать CartPole 256 без ауткамов в лоссе актора
-    agent = UDSAC(4, 2, actor_lr=1e-4, critic_lr=3e-4, critic_heads=5, target_entropy_scale=0.8, alpha_lr=1e-4, tau=0.001)
-    controller = CartPolev0RandomController(low=10, high=195)
+    # agent = UDSAC(4, 2, actor_lr=1e-4, critic_lr=3e-4, critic_heads=5, target_entropy_scale=0.8, alpha_lr=1e-4, tau=0.001)
+    # controller = CartPolev0RandomController(low=10, high=195)
 
-    log = train("CartPole-v0", agent, controller, eval_return_range=(10, 195), eval_horizon_range=(10, 195), warmup_episodes=10, 
-                iterations=350, episodes_per_iter=256, updates_per_iter=100, batch_size=256, test_every=5, seed=42)
+    # log = train("CartPole-v0", agent, controller, eval_return_range=(10, 195), eval_horizon_range=(10, 195), warmup_episodes=10, 
+    #             iterations=350, episodes_per_iter=256, updates_per_iter=100, batch_size=256, test_every=5, seed=42)
