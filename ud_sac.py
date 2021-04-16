@@ -13,7 +13,7 @@ from collections import defaultdict
 
 from joblib import delayed, Parallel
 
-from core import Actor, Critic, MeanController, RandomController, CartPolev0RandomController
+from core import Actor, Critic, RandomController, CartPolev0RandomController, MDNController
 from core import ReplayBuffer, Episode
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -96,7 +96,7 @@ class UDSAC:
         critic_loss.backward()
         self.critic_optimizer.step()
 
-        actor_loss = self._actor_loss(state, command) # + self._actor_loss(state, output)
+        actor_loss = self._actor_loss(state, command) + self._actor_loss(state, output)
         
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
@@ -127,10 +127,6 @@ class UDSAC:
     
     def save(self, path):
         torch.save(self, path)
-        
-    def load(self, path):
-        #TODO
-        pass
 
 
 def rollout(env, agent, desired_return, desired_horizon):
@@ -243,6 +239,7 @@ def train(env_name, agent, controller, eval_return_range, eval_horizon_range, wa
     buffer.add_episodes(episodes)
     
     total_critic_loss, total_actor_loss = 0.0, 0.0
+    # total_controller_loss = 0.0
     
     best_eval_loss = np.inf
     print("Start Training")  
@@ -254,6 +251,10 @@ def train(env_name, agent, controller, eval_return_range, eval_horizon_range, wa
             
             total_actor_loss += actor_loss
             total_critic_loss += critic_loss
+            
+        # for _ in range(updates_per_iter // 2):
+        #     controller_loss = controller.update(batch)
+        #     total_controller_loss += controller_loss
         
         pool = [delayed(sample_episode)(env, agent, controller) for _ in range(episodes_per_iter)]
         episodes = Parallel(n_jobs=n_jobs)(pool)
@@ -269,35 +270,46 @@ def train(env_name, agent, controller, eval_return_range, eval_horizon_range, wa
             
             actor_loss_mean = round(total_actor_loss.item() / ((i + 1) * updates_per_iter), 4)
             critic_loss_mean = round(total_critic_loss.item() / ((i + 1) * updates_per_iter), 4)
+            # controller_loss_mean = round(total_controller_loss.item() / ((i + 1) * (updates_per_iter // 2)), 4)
 
             print(f"Actor loss: {actor_loss_mean}, Critic loss: {critic_loss_mean}, Alpha: {round(agent.alpha.detach().item(), 4)}")
+            # print(f"Actor loss: {actor_loss_mean}, Critic loss: {critic_loss_mean}, Alpha: {round(agent.alpha.detach().item(), 4)}", end=", ")
+            # print(f"Controller loss: {controller_loss_mean}")
 
             log["eval_loss_mean"].append(eval_loss)
             log["eval_loss_std"].append(eval_loss_std)
+            log["actor_loss_mean"].append(actor_loss_mean)
+            log["critic_loss_mean"].append(critic_loss_mean)
+            # log["controller_loss_mean"].append(controller_loss_mean)
             
             if eval_loss < best_eval_loss:
                 best_eval_loss = eval_loss
-                agent.save("udsac_test_best.pt")
+                agent.save("udsac_agent_best.pt")
             
-            agent.save("udsac_test.pt")
+            agent.save("udsac_agent.pt")
+            # controller.save("udsac_controller.pt")
             
     return log
 
 
 if __name__ == "__main__":
-    agent = torch.load("LL_8000_test.pt", map_location="cpu")
-    # agent = UDSAC(8, 4, actor_lr=1e-4, critic_lr=1e-4, critic_heads=5, target_entropy_scale=0.9, alpha_lr=1e-4, tau=0.01)
-    controller = RandomController((-300, 300), (50, 400))
-
-    log = train("LunarLander-v2", agent, controller, eval_return_range=(-300, 300), eval_horizon_range=(50, 400), iterations=8000, 
-                episodes_per_iter=64, updates_per_iter=50, batch_size=1024, test_every=25, seed=42, n_jobs=4, partial_fit=True)
-
-    # log = train("LunarLander-v2", agent, controller, eval_return_range=(-300, 300), eval_horizon_range=(50, 400), warmup_episodes=10, 
-    #             iterations=8000, episodes_per_iter=64, updates_per_iter=50, batch_size=1024, test_every=25, seed=42)
+    import pickle
     
-    # TODO: попробовать CartPole 256 без ауткамов в лоссе актора
-    # agent = UDSAC(4, 2, actor_lr=1e-4, critic_lr=3e-4, critic_heads=5, target_entropy_scale=0.8, alpha_lr=1e-4, tau=0.001)
-    # controller = CartPolev0RandomController(low=10, high=195)
+    # agent = UDSAC(8, 4, actor_lr=1e-4, critic_lr=1e-4, critic_heads=5, target_entropy_scale=0.9, alpha_lr=1e-4, tau=0.01)
+    # controller = RandomController((-300, 300), (50, 400))
+    # controller = MDNController(8, 2, mdn_heads=5, lr=1e-4, sigma_scale=4.5)
 
-    # log = train("CartPole-v0", agent, controller, eval_return_range=(10, 195), eval_horizon_range=(10, 195), warmup_episodes=10, 
-    #             iterations=350, episodes_per_iter=256, updates_per_iter=100, batch_size=256, test_every=5, seed=42)
+    # log = train("LunarLander-v2", agent, controller, eval_return_range=(-300, 300), eval_horizon_range=(50, 300), warmup_episodes=10, 
+                # iterations=10_000, episodes_per_iter=64, updates_per_iter=50, batch_size=1024, test_every=25, seed=42)
+    
+    # Идеи: реже обновлять контроллера (переобучается), ставить больше константу, ставить меньше энтропию
+    
+    agent = UDSAC(4, 2, actor_lr=1e-4, critic_lr=3e-4, critic_heads=5, target_entropy_scale=0.5, alpha_lr=1e-4, tau=0.001)
+    controller = CartPolev0RandomController(low=10, high=195)
+    # controller = MDNController(4, 2, mdn_heads=5, lr=1e-4, sigma_scale=5.0)
+
+    log = train("CartPole-v0", agent, controller, eval_return_range=(10, 195), eval_horizon_range=(10, 195), warmup_episodes=10, 
+                iterations=10_000, episodes_per_iter=256, updates_per_iter=100, batch_size=256, test_every=5, seed=42)
+    
+    with open("logs.pkl", "wb") as log_file:
+        pickle.dump(log, log_file)

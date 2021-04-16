@@ -71,6 +71,12 @@ class CartPolev0RandomController:
         
         return desired_return, desired_return
     
+    def update(self, state):
+        return 0
+    
+    def save(self, path):
+        pass
+    
 
 class RandomController:
     def __init__(self, desired_return_range, desired_horizon_range):  
@@ -82,27 +88,51 @@ class RandomController:
         desired_horizon = np.round(np.random.uniform(self.h_low, self.h_high))
         
         return desired_return, np.round(desired_horizon)
-
-
-class MeanController:
-    def __init__(self, buffer_size, std_scale=1.0):  
-        self.std_scale = std_scale   
-        self.buffer = ReplayBuffer(buffer_size)
+    
+    def update(self, state):
+        return 0
+    
+    def save(self, path):
+        pass
+    
+        
+class MDNController:
+    def __init__(self, state_size, command_size, mdn_heads, lr, sigma_scale=1.0):  
+        self.model = MDN(state_size, command_size, n_heads=mdn_heads, clip=True)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        
+        self.sigma_scale = sigma_scale
 
     def get_command(self, state):
-        returns = [e.total_return for e in self.buffer.buffer]
-        horizons = [e.length for e in self.buffer.buffer]
+        state = torch.tensor(state, dtype=torch.float32, device=DEVICE)
         
-        returns_mean, returns_std = np.mean(returns), np.std(returns)
+        log_alpha, mu, sigma = self.model(state)
+        sigma = self.sigma_scale * sigma
         
-        desired_return = np.random.uniform(returns_mean, returns_mean + self.std_scale * returns_std)
-        desired_horizon = np.mean(horizons)
+        command = self.model.sample(log_alpha, mu, sigma).squeeze().cpu().numpy()
         
-        return desired_return, np.round(desired_horizon)
-    
-    def consume_episode(self, episode):
-        self.buffer.add(episode)
+        return command[0], np.maximum(command[1], 1)
+        
+    def update(self, batch):
+        state, _, _, _, output = batch
 
+        state = torch.tensor(state, dtype=torch.float32, device=DEVICE)
+        output = torch.tensor(output, dtype=torch.float32, device=DEVICE)
+
+        log_alpha, mu, sigma = self.model(state)
+        sigma = self.sigma_scale * sigma
+        
+        loss = self.model.nll_loss(log_alpha, mu, sigma, output)
+        
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        
+        return loss
+    
+    def save(self, path):
+        torch.save(self, path)
+        
 
 class Actor(nn.Module):
     def __init__(self, state_size, action_size, command_scale=(1, 1)):
