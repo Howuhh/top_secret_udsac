@@ -239,7 +239,6 @@ def train(env_name, agent, controller, eval_return_range, eval_horizon_range, wa
     buffer.add_episodes(episodes)
     
     total_critic_loss, total_actor_loss = 0.0, 0.0
-    # total_controller_loss = 0.0
     
     best_eval_loss = np.inf
     print("Start Training")  
@@ -251,10 +250,6 @@ def train(env_name, agent, controller, eval_return_range, eval_horizon_range, wa
             
             total_actor_loss += actor_loss
             total_critic_loss += critic_loss
-            
-        # for _ in range(updates_per_iter // 2):
-        #     controller_loss = controller.update(batch)
-        #     total_controller_loss += controller_loss
         
         pool = [delayed(sample_episode)(env, agent, controller) for _ in range(episodes_per_iter)]
         episodes = Parallel(n_jobs=n_jobs)(pool)
@@ -270,24 +265,19 @@ def train(env_name, agent, controller, eval_return_range, eval_horizon_range, wa
             
             actor_loss_mean = round(total_actor_loss.item() / ((i + 1) * updates_per_iter), 4)
             critic_loss_mean = round(total_critic_loss.item() / ((i + 1) * updates_per_iter), 4)
-            # controller_loss_mean = round(total_controller_loss.item() / ((i + 1) * (updates_per_iter // 2)), 4)
 
             print(f"Actor loss: {actor_loss_mean}, Critic loss: {critic_loss_mean}, Alpha: {round(agent.alpha.detach().item(), 4)}")
-            # print(f"Actor loss: {actor_loss_mean}, Critic loss: {critic_loss_mean}, Alpha: {round(agent.alpha.detach().item(), 4)}", end=", ")
-            # print(f"Controller loss: {controller_loss_mean}")
-
+            
             log["eval_loss_mean"].append(eval_loss)
             log["eval_loss_std"].append(eval_loss_std)
             log["actor_loss_mean"].append(actor_loss_mean)
             log["critic_loss_mean"].append(critic_loss_mean)
-            # log["controller_loss_mean"].append(controller_loss_mean)
             
             if eval_loss < best_eval_loss:
                 best_eval_loss = eval_loss
                 agent.save("udsac_agent_best.pt")
             
             agent.save("udsac_agent.pt")
-            # controller.save("udsac_controller.pt")
             
     return log
 

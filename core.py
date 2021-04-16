@@ -71,12 +71,6 @@ class CartPolev0RandomController:
         
         return desired_return, desired_return
     
-    def update(self, state):
-        return 0
-    
-    def save(self, path):
-        pass
-    
 
 class RandomController:
     def __init__(self, desired_return_range, desired_horizon_range):  
@@ -88,51 +82,7 @@ class RandomController:
         desired_horizon = np.round(np.random.uniform(self.h_low, self.h_high))
         
         return desired_return, np.round(desired_horizon)
-    
-    def update(self, state):
-        return 0
-    
-    def save(self, path):
-        pass
-    
-        
-class MDNController:
-    def __init__(self, state_size, command_size, mdn_heads, lr, sigma_scale=1.0):  
-        self.model = MDN(state_size, command_size, n_heads=mdn_heads, clip=True)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
-        
-        self.sigma_scale = sigma_scale
 
-    def get_command(self, state):
-        state = torch.tensor(state, dtype=torch.float32, device=DEVICE)
-        
-        log_alpha, mu, sigma = self.model(state)
-        sigma = self.sigma_scale * sigma
-        
-        command = self.model.sample(log_alpha, mu, sigma).squeeze().cpu().numpy()
-        
-        return command[0], np.maximum(command[1], 1)
-        
-    def update(self, batch):
-        state, _, _, _, output = batch
-
-        state = torch.tensor(state, dtype=torch.float32, device=DEVICE)
-        output = torch.tensor(output, dtype=torch.float32, device=DEVICE)
-
-        log_alpha, mu, sigma = self.model(state)
-        sigma = self.sigma_scale * sigma
-        
-        loss = self.model.nll_loss(log_alpha, mu, sigma, output)
-        
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        
-        return loss
-    
-    def save(self, path):
-        torch.save(self, path)
-        
 
 class Actor(nn.Module):
     def __init__(self, state_size, action_size, command_scale=(1, 1)):
